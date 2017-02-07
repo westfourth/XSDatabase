@@ -57,6 +57,7 @@ static XSDatabase *StaticDatabase;
         dict = [NSMutableDictionary new];
     });
     
+    objc_sync_enter(dict);
     XSDatabase *database = dict[ID];
     if (database == nil) {
         database = [XSDatabase new];
@@ -65,6 +66,7 @@ static XSDatabase *StaticDatabase;
         NSString *fileName = [NSString stringWithFormat:@"%@.db", ID];
         database.filePath = [cacheDir stringByAppendingPathComponent:fileName];
     }
+    objc_sync_exit(dict);
     return database;
 }
 
@@ -245,17 +247,23 @@ static XSDatabase *StaticDatabase;
      1 - immediate（其他只读），其他数据库连接不可写入，也不可开启IMMEDIATE、EXCLUSIVE事务
      2 - exclusive（不可读写），其他数据库连接只能读取数据
      */
-    return [self executeSQL:@"begin"];
+    sqlite3_mutex_enter(_transaction_mutex);
+    BOOL success = [self executeSQL:@"begin"];
+    return success;
 }
 
 
 - (BOOL)commitTransaction {
-    return [self executeSQL:@"commit"];
+    BOOL success = [self executeSQL:@"commit"];
+    sqlite3_mutex_leave(_transaction_mutex);
+    return success;
 }
 
 
 - (BOOL)rollbackTransaction {
-    return [self executeSQL:@"rollback"];
+    BOOL success = [self executeSQL:@"rollback"];
+    sqlite3_mutex_leave(_transaction_mutex);
+    return success;
 }
 
 

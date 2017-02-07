@@ -33,7 +33,7 @@
                 free((void *)pType);
                 continue;
             }
-            int iCol = [dict[key] intValue];
+            int iCol = [dict[key] intValue];            //  iCol >= 0
             id value = nil;
             
             //---------------- NSNumber基础数据类型 ----------------
@@ -54,13 +54,12 @@
             }
             //---------------- NSNumber数据类型 ----------------
             else if (strcmp(pType, "@\"NSNumber\"") == 0) {
-                const char *decltype = sqlite3_column_decltype(stmt, i);
-                if (strcasestr(decltype, "INT") != NULL) {
-                    sqlite3_int64 num = sqlite3_column_int64(stmt, iCol);
-                    value = @(num);
+                const unsigned char *str = sqlite3_column_text(stmt, iCol);
+                if (str == NULL) {
+                    value = nil;
                 } else {
-                    double num = sqlite3_column_double(stmt, iCol);
-                    value = @(num);
+                    NSString *numberStr = [NSString stringWithUTF8String:(const char *)str];
+                    value = [[self defaultNumberFormatter] numberFromString:numberStr];
                 }
             }
             //---------------- NSString数据类型 ----------------
@@ -69,7 +68,7 @@
                 if (str == NULL) {
                     value = nil;
                 } else {
-                    value = [NSString stringWithUTF8String:(const char *)str];       //  注意：强制转换（完全兼容）
+                    value = [NSString stringWithUTF8String:(const char *)str];
                 }
             }
             //---------------- NSDate数据类型 ----------------
@@ -190,7 +189,7 @@
     
     unsigned int count;
     objc_property_t *props = class_copyPropertyList(cls, &count);
-    NSDictionary *dict = [[self class] tableColumnNameAndColumnTypeDict];
+    NSDictionary *dict = [[self class] tableColumnNameAndColumnIDDict];
     
     XSDatabase *currentDB = [XSDatabase currentDatabase];
     BOOL result = [currentDB updateSQL:sql count:1 eachStmt:^(int index, sqlite3_stmt *stmt) {
@@ -246,12 +245,8 @@
             }
             //---------------- NSNumber数据类型 ----------------
             else if (strcmp(pType, "@\"NSNumber\"") == 0) {
-                const char *decltype = [dict[key] UTF8String];
-                if (strcasestr(decltype, "INT") != NULL) {
-                    sqlite3_bind_int64(stmt, idx, [value longLongValue]);
-                } else {
-                    sqlite3_bind_double(stmt, idx, [value doubleValue]);
-                }
+                NSString *numberStr = [[[self class] defaultNumberFormatter] stringFromNumber:value];
+                sqlite3_bind_text(stmt, idx, numberStr.UTF8String, -1, NULL);
             }
             //---------------- NSString数据类型 ----------------
             else if (strcmp(pType, "@\"NSString\"") == 0) {
@@ -290,72 +285,62 @@
     return array;
 }
 
-//! 找到表中存在的property属性
-+ (NSArray *)propertiesInTable {
-    NSMutableArray *array = [NSMutableArray new];
-    Class cls = [self class];
-    unsigned int count;
-    objc_property_t *props = class_copyPropertyList(cls, &count);
-    NSDictionary *dict = [self tableColumnNameAndColumnIDDict];
-    
-    for (int i = 0; i < count; i++) {
-        objc_property_t prop = props[i];
-        const char *pName = property_getName(prop);
-        NSString *key = [NSString stringWithFormat:@"%s", pName];
-        if (dict[key] != nil) {     //  该属性在表中不存在
-            [array addObject:key];
+/*!
+ 在查询时，需要获取属性在表中对应的列位置
+ 
+ name ---- cid   (key - value)
+ */
++ (NSDictionary *)tableColumnNameAndColumnIDDict {
+    static NSMutableDictionary *mDict = nil;
+    if (mDict == nil) {
+        NSArray *array = [self tableInfo];
+        mDict = [NSMutableDictionary new];
+        for (int i = 0; i < array.count; i++) {
+            NSDictionary *dict = array[i];
+            [mDict setObject:dict[@"cid"] forKey:dict[@"name"]];
         }
     }
-    free(props);
+    return mDict;
+}
+
+//! 找到表中存在的property属性，用于构建sql语句
++ (NSArray *)propertiesInTable {
+    static NSMutableArray *array = nil;
+    if (array == nil) {
+        array = [NSMutableArray new];
+        Class cls = [self class];
+        unsigned int count;
+        objc_property_t *props = class_copyPropertyList(cls, &count);
+        NSDictionary *dict = [self tableColumnNameAndColumnIDDict];
+        
+        for (int i = 0; i < count; i++) {
+            objc_property_t prop = props[i];
+            const char *pName = property_getName(prop);
+            NSString *key = [NSString stringWithFormat:@"%s", pName];
+            if (dict[key] != nil) {     //  该属性在表中不存在
+                [array addObject:key];
+            }
+        }
+        free(props);
+    }
     return array;
 }
 
-//! 获取表的主键
+//! 获取表的主键，用于update
 + (NSString *)primaryKey {
     static NSString *primaryKey = nil;
-    NSArray *array = [self tableInfo];
-    for (int i = 0; i < array.count; i++) {
-        NSDictionary *dict = array[i];
-        if ([dict[@"pk"] intValue] == 1) {
-            primaryKey = dict[@"name"];
-            break;
+    if (primaryKey == nil) {
+        NSArray *array = [self tableInfo];
+        for (int i = 0; i < array.count; i++) {
+            NSDictionary *dict = array[i];
+            if ([dict[@"pk"] intValue] == 1) {
+                primaryKey = dict[@"name"];
+                break;
+            }
         }
     }
     NSAssert1(primaryKey.length, @"表 %@ 必须得有主键才能使用本方法", [self class]);
     return primaryKey;
-}
-
-/*!
-    在查询时，需要获取属性在表中对应的列位置
- 
-    name ---- cid   (key - value)
- */
-+ (NSDictionary *)tableColumnNameAndColumnIDDict {
-    NSArray *array = [self tableInfo];
-    NSMutableDictionary *mDict = [NSMutableDictionary new];
-    for (int i = 0; i < array.count; i++) {
-        NSDictionary *dict = array[i];
-        [mDict setObject:dict[@"cid"] forKey:dict[@"name"]];
-    }
-    return mDict;
-}
-
-/*!
-    在查询时，需要获取属性在表中的声明类型
-
-    name ---- type   (key - value)
- */
-+ (NSDictionary *)tableColumnNameAndColumnTypeDict {
-    static NSMutableDictionary *mDict;
-    if (mDict == nil) {
-        mDict = [NSMutableDictionary new];
-        NSArray *array = [self tableInfo];
-        for (int i = 0; i < array.count; i++) {
-            NSDictionary *dict = array[i];
-            [mDict setObject:dict[@"type"] forKey:dict[@"name"]];
-        }
-    }
-    return mDict;
 }
 
 + (NSDateFormatter *)defaultDateFormatter {
@@ -367,6 +352,17 @@
     //  "yyyy-MM-dd HH:mm:ss SSS"
     dateFormatter.dateFormat = @"yyyy-MM-dd HH:mm:ss SSS";
     return dateFormatter;
+}
+
++ (NSNumberFormatter *)defaultNumberFormatter {
+    static NSNumberFormatter *numberFormatter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        numberFormatter = [NSNumberFormatter new];
+        numberFormatter.numberStyle = NSNumberFormatterDecimalStyle;
+        numberFormatter.usesGroupingSeparator = NO;
+    });
+    return numberFormatter;
 }
 
 @end

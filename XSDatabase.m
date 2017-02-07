@@ -10,6 +10,20 @@
 
 @implementation XSDatabase
 
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        _transaction_mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    sqlite3_mutex_free(_transaction_mutex);
+}
+
 #pragma mark -  打开关闭数据库
 //_______________________________________________________________________________________________________________
 
@@ -19,9 +33,6 @@
 }
 
 - (void)openDB {
-    if (self.filePath.length == 0) {
-        self.filePath = @":memory:";
-    }
     /*
      打开标记：读写、不存在创建、串行模式。
      串行模式为线程安全；单线程模式、并行模式都为非线程安全。

@@ -29,6 +29,7 @@ typedef void (^sqlite3_stmt_block_t) (int index, sqlite3_stmt *stmt);       //  
  */
 @interface XSDatabase : NSObject {
     sqlite3 *_db;                           //!<
+    sqlite3_mutex *_transaction_mutex;      //!<  事务互斥: cannot start a transaction within a transaction
 }
 
 #pragma mark -  （可选）用于打开其他路径的数据库
